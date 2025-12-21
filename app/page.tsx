@@ -1,65 +1,332 @@
-import Image from "next/image";
+"use client";
+
+import { useState } from "react";
+import SearchForm from "@/components/SearchForm";
+import DataDisplay from "@/components/DataDisplay";
+import { AiProcessor, AIQueryAnalysis } from "@/services/ai-processor";
+import { GusClient } from "@/services/gus-client";
 
 export default function Home() {
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [workflowSteps, setWorkflowSteps] = useState<string[]>([]);
+
+  // --- WORKFLOW STATE ---
+  type WorkflowStage = 'INIT' | 'CONFIGURATION' | 'GRID_PREVIEW' | 'DONE';
+  const [stage, setStage] = useState<WorkflowStage>('INIT');
+
+  const [analysis, setAnalysis] = useState<AIQueryAnalysis | null>(null);
+
+  // Configuration State
+  const [candidateUnits, setCandidateUnits] = useState<any[]>([]);
+  const [selectedUnitId, setSelectedUnitId] = useState<string | null>(null);
+  const [unitSearchInput, setUnitSearchInput] = useState("");
+
+  const [candidateVars, setCandidateVars] = useState<any[]>([]);
+  const [selectedVarIds, setSelectedVarIds] = useState<number[]>([]);
+  const [varSearchInput, setVarSearchInput] = useState("");
+
+  const [targetYears, setTargetYears] = useState<number[]>([2022, 2023]);
+  const [data, setData] = useState<any[]>([]);
+
+  const aiProcessor = new AiProcessor();
+  const gusClient = new GusClient(process.env.NEXT_PUBLIC_GUS_CLIENT_ID);
+  const addStep = (step: string) => setWorkflowSteps(prev => [...prev, step]);
+
+  // --- STAGE 1: DISCOVERY (Sequential + Re-Rank) ---
+  const handleSearch = async (query: string) => {
+    setIsProcessing(true);
+    setWorkflowSteps([]);
+    setStage('INIT');
+    setData([]);
+    setCandidateUnits([]);
+    setCandidateVars([]);
+    setSelectedUnitId(null);
+    setSelectedVarIds([]); // Clear previous selections
+
+    addStep(`🧠 Analyzing query: "${query}"...`);
+
+    try {
+      // 1. AI Analysis (Parse Intent)
+      const result = await aiProcessor.analyzeQuery(query);
+      if (result.intent === "error") throw new Error(result.explanation);
+
+      setAnalysis(result);
+      // Use efficient search term if available, else fall back to topic
+      const searchTerms = result.searchTerms || result.topic || query;
+      const location = result.location || result.unit || "Polska";
+
+      addStep(`🤖 Intent: ${result.intent} | Location: ${location} | Terms: ${searchTerms}`);
+
+      if (result.years && result.years.length > 0) {
+        setTargetYears(result.years);
+      }
+
+      // 2. Locate (Unit Search)
+      addStep(`🗺️ Locating "${location}"...`);
+      const unitRes = await gusClient.searchUnits(location);
+      const units = unitRes?.results || [];
+
+      if (units.length === 0) {
+        throw new Error(`Could not find unit "${location}" in GUS.`);
+      }
+
+      // Set candidates and pick the best one for Level context
+      setCandidateUnits(units);
+      const bestUnit = units[0]; // Heuristic: Top result is usually best
+      setSelectedUnitId(bestUnit.id);
+      addStep(`📍 Found ${bestUnit.name} (Level ${bestUnit.level})`);
+
+      // 3. Search Variables (Strict Level Filtering)
+      addStep(`🔎 Searching variables for "${searchTerms}" (Level ${bestUnit.level})...`);
+      const varRes = await gusClient.searchVariables(searchTerms, bestUnit.level);
+      const initialVars = varRes?.results || [];
+
+      if (initialVars.length === 0) {
+        addStep(`⚠️ No variables found for "${searchTerms}" at Level ${bestUnit.level}. Try manual search.`);
+        setCandidateVars([]);
+      } else {
+        // 4. AI Re-Ranking (Contextual Filter)
+        addStep(`🧠 AI Ranking ${initialVars.length} candidates...`);
+        const rankedVars = await aiProcessor.reRankVariables(query, initialVars);
+        setCandidateVars(rankedVars);
+        addStep(`✅ Selected TOP ${rankedVars.length} relevant variables.`);
+
+        // Auto-select top 3
+        setSelectedVarIds(rankedVars.slice(0, 3).map((v: any) => v.id));
+      }
+
+      setStage('CONFIGURATION');
+
+    } catch (error: any) {
+      console.error("Workflow Failed", error);
+      addStep(`❌ Error: ${error.message || "Unknown error"}`);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // --- STAGE 2 ACTIONS: SEARCH MORE ---
+  const handleSearchMoreUnits = async () => {
+    if (!unitSearchInput.trim()) return;
+    setIsProcessing(true);
+    try {
+      const res = await gusClient.searchUnits(unitSearchInput);
+      const newUnits = res?.results || [];
+
+      // Merge unique units
+      setCandidateUnits(prev => {
+        const existingIds = new Set(prev.map(u => u.id));
+        const uniqueNew = newUnits.filter((u: any) => !existingIds.has(u.id));
+        return [...prev, ...uniqueNew];
+      });
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setIsProcessing(false);
+      setUnitSearchInput("");
+    }
+  };
+
+  const handleSearchMoreVars = async () => {
+    if (!varSearchInput.trim()) return;
+    setIsProcessing(true);
+    try {
+      // Get the level of the currently selected unit, if any
+      const selectedUnit = candidateUnits.find(u => u.id === selectedUnitId);
+      const level = selectedUnit?.level; // Helper: Ensure your Unit type has 'level'
+
+      const res = await gusClient.searchVariables(varSearchInput, level);
+      const newVars = res?.results || [];
+
+      if (newVars.length === 0) {
+        alert(level ? `No variables found for "${varSearchInput}" at level ${level}.` : "No variables found.");
+      }
+
+      // Merge unique vars
+      setCandidateVars(prev => {
+        const existingIds = new Set(prev.map(v => v.id));
+        const uniqueNew = newVars.filter((v: any) => !existingIds.has(v.id));
+        return [...prev, ...uniqueNew];
+      });
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setIsProcessing(false);
+      setVarSearchInput("");
+    }
+  };
+
+
+  // --- STAGE 3: FETCH & PREVIEW ---
+  const handleProceedToGrid = async () => {
+    if (!selectedUnitId) {
+      alert("Please select a Unit.");
+      return;
+    }
+    if (selectedVarIds.length === 0) {
+      alert("Please select at least one Variable.");
+      return;
+    }
+
+    setIsProcessing(true);
+    const unitName = candidateUnits.find(u => u.id === selectedUnitId)?.name || selectedUnitId;
+    addStep(`🚀 Fetching data for ${unitName} (${selectedVarIds.length} variables)...`);
+
+    try {
+      const response = await gusClient.getUnitData(selectedUnitId, selectedVarIds, targetYears);
+
+      if (response?.results && response.results.length > 0) {
+        console.log("[DEBUG] Stage 3 Response:", response.results);
+        setData(response.results);
+        setStage('GRID_PREVIEW');
+        addStep(`👀 Generating Data Grid Preview...`);
+      } else {
+        // Handle Empty Data Explicitly
+        alert(`No data found for these variables in ${unitName}.\n\nTry selecting DIFFERENT variables that match the unit's administrative level.`);
+        addStep(`⚠️ No data found. Please adjust variables.`);
+        // Stay in CONFIGURATION stage
+      }
+    } catch (e: any) {
+      addStep(`❌ Fetch Error: ${e.message}`);
+      console.error(e);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // --- STAGE 4: FINAL CONFIRMATION ---
+  const handleFinalFetch = async () => {
+    setStage('DONE');
+    addStep(`🎉 Workflow Complete!`);
+  };
+
+  const toggleVariable = (id: number) => {
+    setSelectedVarIds(prev =>
+      prev.includes(id) ? prev.filter(v => v !== id) : [...prev, id]
+    );
+  };
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
+    <main className="min-h-screen bg-[#121212] text-white p-8 font-sans selection:bg-purple-500/30">
+      <div className="max-w-7xl mx-auto pt-10">
+        <header className="text-center mb-12 border-b border-white/10 pb-8">
+          <div className="inline-block px-3 py-1 bg-white/5 rounded-full text-xs text-blue-300 mb-4 border border-white/10">
+            API SDP Explorer v4.0 (AI Re-Rank)
+          </div>
+          <h1 className="text-4xl md:text-6xl font-bold bg-clip-text text-transparent bg-gradient-to-b from-white to-gray-400 tracking-tight">
+            Data Explorer
           </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
+        </header>
+
+        {/* SEARCH FORM (Stage 0) */}
+        <SearchForm onSearch={handleSearch} isLoading={isProcessing} />
+
+        {/* WORKFLOW LOGS */}
+        {workflowSteps.length > 0 && (
+          <div className="w-full max-w-2xl mx-auto mt-4 mb-8 bg-black/50 p-4 rounded-xl border border-white/10 font-mono text-sm space-y-1">
+            {workflowSteps.map((step, i) => (
+              <div key={i} className="text-gray-300">{step}</div>
+            ))}
+          </div>
+        )}
+
+        {/* STAGE 2: UNIFIED CONFIGURATION UI */}
+        {stage === 'CONFIGURATION' && (
+          <div className="w-full max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-2 gap-8 animate-in fade-in slide-in-from-bottom-4">
+
+            {/* LEFT: UNITS */}
+            <div className="bg-[#1E1E1E] p-6 rounded-xl border border-white/10 flex flex-col h-[600px]">
+              <h2 className="text-xl font-bold mb-4 text-purple-300 flex items-center gap-2">
+                <span>1. Select Unit</span>
+                <span className="text-xs bg-purple-500/20 px-2 py-1 rounded text-purple-400 font-normal">Single Select</span>
+              </h2>
+
+              {/* Add Unit Input */}
+              <div className="flex gap-2 mb-4">
+                <input
+                  type="text"
+                  value={unitSearchInput}
+                  onChange={(e) => setUnitSearchInput(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleSearchMoreUnits()}
+                  placeholder="Find more units..."
+                  className="flex-1 bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-purple-500"
+                />
+                <button onClick={handleSearchMoreUnits} className="px-3 py-2 bg-white/10 rounded-lg text-sm hover:bg-white/20">Search</button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto space-y-2 pr-2">
+                {candidateUnits.map(u => (
+                  <div key={u.id} onClick={() => setSelectedUnitId(u.id)}
+                    className={`p-3 rounded-lg border cursor-pointer transition-all flex items-center justify-between group ${selectedUnitId === u.id ? 'bg-purple-900/20 border-purple-500' : 'bg-white/5 border-transparent hover:bg-white/10'}`}>
+                    <span className="text-sm text-gray-200">{u.name} (Lvl {u.level})</span>
+                    <div className={`w-4 h-4 rounded-full border flex items-center justify-center ${selectedUnitId === u.id ? 'border-purple-500' : 'border-gray-600'}`}>
+                      {selectedUnitId === u.id && <div className="w-2 h-2 rounded-full bg-purple-500"></div>}
+                    </div>
+                  </div>
+                ))}
+                {candidateUnits.length === 0 && <p className="text-gray-500 text-sm text-center py-4">No units found.</p>}
+              </div>
+            </div>
+
+            {/* RIGHT: VARIABLES */}
+            <div className="bg-[#1E1E1E] p-6 rounded-xl border border-white/10 flex flex-col h-[600px]">
+              <h2 className="text-xl font-bold mb-4 text-blue-300 flex items-center gap-2">
+                <span>2. Select Variables</span>
+                <span className="text-xs bg-blue-500/20 px-2 py-1 rounded text-blue-400 font-normal">Multi Select ({selectedVarIds.length})</span>
+              </h2>
+
+              {/* Add Var Input */}
+              <div className="flex gap-2 mb-4">
+                <input
+                  type="text"
+                  value={varSearchInput}
+                  onChange={(e) => setVarSearchInput(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleSearchMoreVars()}
+                  placeholder="Find more variables..."
+                  className="flex-1 bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
+                />
+                <button onClick={handleSearchMoreVars} className="px-3 py-2 bg-white/10 rounded-lg text-sm hover:bg-white/20">Search</button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto space-y-2 pr-2">
+                {candidateVars.map(v => (
+                  <div key={v.id} onClick={() => toggleVariable(v.id)}
+                    className={`p-3 rounded-lg border cursor-pointer transition-all hover:bg-white/10 flex items-start gap-3 ${selectedVarIds.includes(v.id) ? 'bg-blue-900/10 border-blue-500/50' : 'bg-white/5 border-transparent'}`}>
+                    <div className={`w-4 h-4 rounded border mt-0.5 flex items-center justify-center shrink-0 ${selectedVarIds.includes(v.id) ? 'bg-blue-500 border-blue-500' : 'border-gray-500'}`}>
+                      {selectedVarIds.includes(v.id) && <span className="text-xs text-white">✓</span>}
+                    </div>
+                    <div className="flex-1">
+                      <div className="text-sm text-gray-200">{v.n1}</div>
+                      <div className="text-xs text-gray-500 mt-1">{[v.n2, v.n3].filter(Boolean).join(" • ")}</div>
+                    </div>
+                  </div>
+                ))}
+                {candidateVars.length === 0 && <p className="text-gray-500 text-sm text-center py-4">No variables found.</p>}
+              </div>
+
+              <div className="data-[t] pt-6 mt-4 border-t border-white/10">
+                <button onClick={handleProceedToGrid}
+                  disabled={!selectedUnitId || selectedVarIds.length === 0}
+                  className="w-full py-3 bg-gradient-to-r from-blue-600 to-purple-600 rounded-lg font-bold hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed shadow-lg">
+                  Generate Report &rarr;
+                </button>
+              </div>
+            </div>
+
+          </div>
+        )}
+
+        {/* FINAL STAGE: DATA DISPLAY */}
+        {(stage === 'GRID_PREVIEW' || stage === 'DONE') && (
+          <DataDisplay
+            analysis={analysis}
+            data={data}
+            onConfirm={handleFinalFetch}
+            isFetchingObject={isProcessing}
+            metaMap={{}}
+          />
+        )}
+      </div>
+    </main>
   );
 }
