@@ -122,8 +122,8 @@ export class AiProcessor {
             intent: "data_request",
             searchTerms: "Ludność",
             topic: "Ludność",
-            location: "Mazowieckie", // Hardcoded for this specific test case, usually 'Polska'
-            unit: "Mazowieckie",
+            location: "Polska", // Default to Polska for neutrality
+            unit: "Polska",
             years: [2023],
             scope: isMulti ? "multi_unit" : "single_unit",
             targetUnitType: isMulti ? "gmina" : undefined,
