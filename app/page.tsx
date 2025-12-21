@@ -3,7 +3,7 @@
 import { useState } from "react";
 import SearchForm from "@/components/SearchForm";
 import DataDisplay from "@/components/DataDisplay";
-import { AiProcessor, AIQueryAnalysis } from "@/services/ai-processor";
+import { AiProcessor, AIQueryAnalysis, getLevelFromUnitType } from "@/services/ai-processor";
 import { GusClient } from "@/services/gus-client";
 
 export default function Home() {
@@ -55,7 +55,7 @@ export default function Home() {
       const searchTerms = result.searchTerms || result.topic || query;
       const location = result.location || result.unit || "Polska";
 
-      addStep(`🤖 Intent: ${result.intent} | Location: ${location} | Terms: ${searchTerms}`);
+      addStep(`🤖 Intent: ${result.intent} | Location: ${location} | Terms: ${searchTerms} | Scope: ${result.scope || "single_unit"}`);
 
       if (result.years && result.years.length > 0) {
         setTargetYears(result.years);
@@ -76,13 +76,23 @@ export default function Home() {
       setSelectedUnitId(bestUnit.id);
       addStep(`📍 Found ${bestUnit.name} (Level ${bestUnit.level})`);
 
+      // Determine Target Level for Variable Search
+      // If Scope is MULTI_UNIT, we look for variables for the CHILD unit level (e.g. gmina level 5)
+      // If Scope is SINGLE_UNIT, we look for variables for the PARENT unit level (e.g. woj level 2)
+      let searchLevel = bestUnit.level;
+      if (result.scope === 'multi_unit') {
+        const targetLevel = getLevelFromUnitType(result.targetUnitType);
+        addStep(`🔄 Multi-Unit Scope: Switching variable search to Level ${targetLevel} (${result.targetUnitType}).`);
+        searchLevel = targetLevel;
+      }
+
       // 3. Search Variables (Strict Level Filtering)
-      addStep(`🔎 Searching variables for "${searchTerms}" (Level ${bestUnit.level})...`);
-      const varRes = await gusClient.searchVariables(searchTerms, bestUnit.level);
+      addStep(`🔎 Searching variables for "${searchTerms}" (Level ${searchLevel})...`);
+      const varRes = await gusClient.searchVariables(searchTerms, searchLevel);
       const initialVars = varRes?.results || [];
 
       if (initialVars.length === 0) {
-        addStep(`⚠️ No variables found for "${searchTerms}" at Level ${bestUnit.level}. Try manual search.`);
+        addStep(`⚠️ No variables found for "${searchTerms}" at Level ${searchLevel}. Try manual search.`);
         setCandidateVars([]);
       } else {
         // 4. AI Re-Ranking (Contextual Filter)
@@ -131,15 +141,21 @@ export default function Home() {
     if (!varSearchInput.trim()) return;
     setIsProcessing(true);
     try {
-      // Get the level of the currently selected unit, if any
-      const selectedUnit = candidateUnits.find(u => u.id === selectedUnitId);
-      const level = selectedUnit?.level; // Helper: Ensure your Unit type has 'level'
+      // Get search level logic
+      let searchLevel: number | undefined;
 
-      const res = await gusClient.searchVariables(varSearchInput, level);
+      if (analysis?.scope === 'multi_unit') {
+         searchLevel = getLevelFromUnitType(analysis.targetUnitType);
+      } else {
+         const selectedUnit = candidateUnits.find(u => u.id === selectedUnitId);
+         searchLevel = selectedUnit?.level;
+      }
+
+      const res = await gusClient.searchVariables(varSearchInput, searchLevel);
       const newVars = res?.results || [];
 
       if (newVars.length === 0) {
-        alert(level ? `No variables found for "${varSearchInput}" at level ${level}.` : "No variables found.");
+        alert(searchLevel ? `No variables found for "${varSearchInput}" at level ${searchLevel}.` : "No variables found.");
       }
 
       // Merge unique vars
@@ -170,22 +186,92 @@ export default function Home() {
 
     setIsProcessing(true);
     const unitName = candidateUnits.find(u => u.id === selectedUnitId)?.name || selectedUnitId;
-    addStep(`🚀 Fetching data for ${unitName} (${selectedVarIds.length} variables)...`);
+
+    // Determine Fetch Strategy
+    const isMultiUnit = analysis?.scope === 'multi_unit';
+
+    addStep(`🚀 Fetching data for ${unitName} (${selectedVarIds.length} variables)... [Mode: ${isMultiUnit ? 'Multi-Unit' : 'Single-Unit'}]`);
 
     try {
-      const response = await gusClient.getUnitData(selectedUnitId, selectedVarIds, targetYears);
+      if (isMultiUnit) {
+         // --- MULTI UNIT STRATEGY ---
+         const targetLevel = getLevelFromUnitType(analysis?.targetUnitType);
 
-      if (response?.results && response.results.length > 0) {
-        console.log("[DEBUG] Stage 3 Response:", response.results);
-        setData(response.results);
-        setStage('GRID_PREVIEW');
-        addStep(`👀 Generating Data Grid Preview...`);
+         // Helper to fetch variable data for children
+         // Note: GUS API '/data/by-variable/{id}' accepts unit-parent-id and unit-level
+         // It returns results[] where each item is a UnitData
+
+         // We need to fetch data for EACH selected variable
+         const fetchPromises = selectedVarIds.map(async (varId) => {
+             const res = await gusClient.getVariableData(varId, targetLevel, targetYears, selectedUnitId);
+             // Response contains .results (list of UnitData)
+             // We need to tag these results with varId because the raw UnitData doesn't have it easily accessible?
+             // Actually getVariableData response (SingleVariableData) has 'variableId'.
+             // But wait, gus-client.getVariableData returns GusResponse<any>.
+             // Let's assume the standard structure.
+             return { varId, data: res?.results }; // results is UnitData[]
+         });
+
+         const allResults = await Promise.all(fetchPromises);
+
+         // Now we need to restructure this for DataDisplay.
+         // DataDisplay (Multi-Mode) expects an array of Units, each having a list of values (Variables).
+         // The fetched structure: List of Variables, each having a list of Units.
+         // We need to PIVOT.
+
+         const unitMap = new Map<string, any>(); // id -> { id, name, values: [] }
+
+         allResults.forEach(({ varId, data }) => {
+            if (!data) return;
+            // data is UnitData[]: { id, name, values: [ {year, val} ] }
+            (data as any[]).forEach((unitItem: any) => {
+                if (!unitMap.has(unitItem.id)) {
+                    unitMap.set(unitItem.id, {
+                        id: unitItem.id,
+                        name: unitItem.name,
+                        values: []
+                    });
+                }
+
+                const unitEntry = unitMap.get(unitItem.id);
+                // Add variable values to this unit
+                // We should tag them with variableId
+                const enrichedValues = (unitItem.values || []).map((val: any) => ({
+                    ...val,
+                    variableId: varId
+                }));
+
+                unitEntry.values.push(...enrichedValues);
+            });
+         });
+
+         const unifiedData = Array.from(unitMap.values());
+
+         if (unifiedData.length > 0) {
+             console.log("[DEBUG] Stage 3 Multi-Unit Response:", unifiedData);
+             setData(unifiedData);
+             setStage('GRID_PREVIEW');
+             addStep(`👀 Generating Multi-Unit Data Grid Preview...`);
+         } else {
+             alert(`No child units found with data.`);
+             addStep(`⚠️ No data found.`);
+         }
+
       } else {
-        // Handle Empty Data Explicitly
-        alert(`No data found for these variables in ${unitName}.\n\nTry selecting DIFFERENT variables that match the unit's administrative level.`);
-        addStep(`⚠️ No data found. Please adjust variables.`);
-        // Stay in CONFIGURATION stage
+          // --- SINGLE UNIT STRATEGY (Legacy) ---
+          const response = await gusClient.getUnitData(selectedUnitId, selectedVarIds, targetYears);
+
+          if (response?.results && response.results.length > 0) {
+            console.log("[DEBUG] Stage 3 Response:", response.results);
+            setData(response.results);
+            setStage('GRID_PREVIEW');
+            addStep(`👀 Generating Data Grid Preview...`);
+          } else {
+            alert(`No data found for these variables in ${unitName}.\n\nTry selecting DIFFERENT variables that match the unit's administrative level.`);
+            addStep(`⚠️ No data found. Please adjust variables.`);
+          }
       }
+
     } catch (e: any) {
       addStep(`❌ Fetch Error: ${e.message}`);
       console.error(e);
@@ -321,6 +407,7 @@ export default function Home() {
           <DataDisplay
             analysis={analysis}
             data={data}
+            candidateVars={candidateVars} // Need to pass this to resolve var names in multi-unit mode
             onConfirm={handleFinalFetch}
             isFetchingObject={isProcessing}
             metaMap={{}}

@@ -5,44 +5,73 @@ import { generateGusXml, GusXmlData } from "../services/xml-generator";
 interface DataDisplayProps {
     data: any[];
     analysis: AIQueryAnalysis | null;
+    candidateVars?: any[]; // Added to resolve names for multi-unit mode
     onConfirm: () => void;
     isFetchingObject: boolean;
     metaMap?: Record<number, string>;
 }
 
-export default function DataDisplay({ data, analysis, onConfirm, isFetchingObject, metaMap }: DataDisplayProps) {
+export default function DataDisplay({ data, analysis, candidateVars, onConfirm, isFetchingObject, metaMap }: DataDisplayProps) {
     const [orientation, setOrientation] = useState<'vars-cols' | 'years-cols'>('vars-cols');
     const [showAttributes, setShowAttributes] = useState(false);
+    const isMultiUnit = analysis?.scope === 'multi_unit';
 
     // Helper to get unique years from all variables
     const getAllYears = () => {
         if (!data || data.length === 0) return [];
         const years = new Set<number>();
-        data.forEach(v => v.values?.forEach((val: any) => years.add(val.year)));
+        // Check structure based on scope
+        if (isMultiUnit) {
+             // Multi-Unit: data is Array of Units. Each unit has values: [{ variableId, year, value }]
+             data.forEach(unit => unit.values?.forEach((val: any) => years.add(val.year)));
+        } else {
+             // Single-Unit: data is Array of Variables. Each var has values: [{ year, value }]
+             data.forEach(v => v.values?.forEach((val: any) => years.add(val.year)));
+        }
         return Array.from(years).sort((a, b) => a - b);
     };
 
-    const allYears = useMemo(() => getAllYears(), [data]);
+    const allYears = useMemo(() => getAllYears(), [data, isMultiUnit]);
 
     // Generate XML String
     const xmlContent = useMemo(() => {
         if (!data || data.length === 0 || !analysis) return "";
 
-        const xmlData: GusXmlData = {
-            unit: {
-                id: data[0]?.["unit-id"] || "unknown", // fallback logic could be better if unit obj passed
-                name: analysis.unit || analysis.location || "Unknown Unit"
-            },
-            variables: data.map(v => ({
+        // Resolve variables metadata
+        // For Multi-Unit, we need to find what variables exist in the data
+        let variablesList: any[] = [];
+        if (isMultiUnit) {
+            const varIds = new Set<number>();
+            data.forEach(u => u.values?.forEach((v: any) => varIds.add(v.variableId)));
+            variablesList = Array.from(varIds).map(vid => {
+                const found = candidateVars?.find(c => c.id === vid);
+                return {
+                    id: vid,
+                    name: found?.n1 || `Variable ${vid}`,
+                    n1: found?.n1 || `Variable ${vid}`,
+                    measureUnit: found?.["measure-unit"] || "-"
+                };
+            });
+        } else {
+             variablesList = data.map(v => ({
                 id: v.id,
                 name: v.name,
-                n1: v.name, // Mapping 'name' to n1 as generic fallback, ideally we have more metadata
+                n1: v.name,
                 measureUnit: v["measure-unit"] || "-"
-            })),
+            }));
+        }
+
+        const xmlData: GusXmlData = {
+            scope: isMultiUnit ? 'multi_unit' : 'single_unit',
+            unit: {
+                id: isMultiUnit ? (analysis.location || "Multiple") : (data[0]?.["unit-id"] || "unknown"),
+                name: analysis.unit || analysis.location || "Unknown Unit"
+            },
+            variables: variablesList,
             results: data
         };
         return generateGusXml(xmlData);
-    }, [data, analysis]);
+    }, [data, analysis, isMultiUnit, candidateVars]);
 
 
     const downloadCSV = () => {
@@ -50,30 +79,65 @@ export default function DataDisplay({ data, analysis, onConfirm, isFetchingObjec
 
         let csvContent = "";
 
-        if (orientation === 'vars-cols') {
-            // Header: Year, Var1, Var2...
-            const header = ["Year", ...data.map(v => `"${v.name}"`)].join(",");
-            const rows = allYears.map(year => {
-                const rowVals = [year];
-                data.forEach(v => {
-                    const valObj = v.values?.find((val: any) => val.year === year);
-                    rowVals.push(valObj ? (valObj.value ?? valObj.val ?? "") : "");
-                });
-                return rowVals.join(",");
-            }).join("\n");
-            csvContent = header + "\n" + rows;
-        } else {
-            // Header: Variable, 2022, 2023...
-            const header = ["Variable", ...allYears].join(",");
-            const rows = data.map(v => {
-                const rowVals = [`"${v.name}"`];
+        if (isMultiUnit) {
+            // Multi-Unit CSV Strategy
+            // Rows: Units
+            // Cols: Variables (maybe suffix with year if multiple years?)
+            // Let's assume grouping by Unit, then Year, then Vars
+
+            // Resolve var names
+            const varIds = new Set<number>();
+            data.forEach(u => u.values?.forEach((v: any) => varIds.add(v.variableId)));
+            const uniqueVars = Array.from(varIds);
+
+            // Header: UnitId, UnitName, Year, Var1Name, Var2Name...
+            const header = ["UnitId", "UnitName", "Year", ...uniqueVars.map(vid => {
+                const found = candidateVars?.find(c => c.id === vid);
+                return `"${found?.n1 || vid}"`;
+            })].join(",");
+
+            const rows: string[] = [];
+            data.forEach(unit => {
                 allYears.forEach(year => {
-                    const valObj = v.values?.find((val: any) => val.year === year);
-                    rowVals.push(valObj ? (valObj.value ?? valObj.val ?? "") : "");
+                    const rowVals = [unit.id, `"${unit.name}"`, year];
+                    let hasData = false;
+                    uniqueVars.forEach(vid => {
+                        const valObj = unit.values?.find((v: any) => v.variableId === vid && v.year === year);
+                        if (valObj) hasData = true;
+                        rowVals.push(valObj ? (valObj.value ?? valObj.val ?? "") : "");
+                    });
+                    if (hasData) rows.push(rowVals.join(","));
                 });
-                return rowVals.join(",");
-            }).join("\n");
-            csvContent = header + "\n" + rows;
+            });
+            csvContent = header + "\n" + rows.join("\n");
+
+        } else {
+            // Existing Single-Unit CSV Strategy
+            if (orientation === 'vars-cols') {
+                // Header: Year, Var1, Var2...
+                const header = ["Year", ...data.map(v => `"${v.name}"`)].join(",");
+                const rows = allYears.map(year => {
+                    const rowVals = [year];
+                    data.forEach(v => {
+                        const valObj = v.values?.find((val: any) => val.year === year);
+                        rowVals.push(valObj ? (valObj.value ?? valObj.val ?? "") : "");
+                    });
+                    return rowVals.join(",");
+                }).join("\n");
+                csvContent = header + "\n" + rows;
+            } else {
+                // Header: Variable, 2022, 2023...
+                const header = ["Variable", ...allYears].join(",");
+                const rows = data.map(v => {
+                    const rowVals = [`"${v.name}"`];
+                    allYears.forEach(year => {
+                        const valObj = v.values?.find((val: any) => val.year === year);
+                        rowVals.push(valObj ? (valObj.value ?? valObj.val ?? "") : "");
+                    });
+                    return rowVals.join(",");
+                }).join("\n");
+                csvContent = header + "\n" + rows;
+            }
         }
 
         const encodedUri = encodeURI("data:text/csv;charset=utf-8," + csvContent);
@@ -129,6 +193,11 @@ export default function DataDisplay({ data, analysis, onConfirm, isFetchingObjec
                             Unit: {analysis.unit || analysis.location}
                         </div>
                     )}
+                    {isMultiUnit && (
+                         <div className="px-3 py-1 rounded bg-orange-500/10 text-orange-400 text-xs border border-orange-500/20">
+                            Scope: Multi-Unit ({analysis.targetUnitType})
+                        </div>
+                    )}
                 </div>
             </div>
 
@@ -160,6 +229,7 @@ export default function DataDisplay({ data, analysis, onConfirm, isFetchingObjec
                                 <span>Show Attributes</span>
                             </label>
 
+                            {!isMultiUnit && (
                             <div className="flex bg-[#2d2d2d] rounded-lg p-1 border border-white/10">
                                 <button
                                     onClick={() => setOrientation('vars-cols')}
@@ -174,6 +244,7 @@ export default function DataDisplay({ data, analysis, onConfirm, isFetchingObjec
                                     Mode B: Time Series
                                 </button>
                             </div>
+                            )}
                         </div>
                     </div>
 
@@ -181,7 +252,27 @@ export default function DataDisplay({ data, analysis, onConfirm, isFetchingObjec
                     <div className="bg-[#1e1e1e] border border-white/10 rounded-2xl overflow-hidden shadow-2xl overflow-x-auto">
                         <table className="w-full text-left text-sm text-gray-400">
                             <thead className="bg-[#121212] text-gray-200 uppercase font-mono text-xs sticky top-0">
-                                <tr>
+                                {isMultiUnit ? (
+                                    <tr>
+                                        <th className="px-4 py-3 bg-[#121212] min-w-[150px]">Unit</th>
+                                        {/* Identify Unique Vars from Data to render columns */}
+                                        {(() => {
+                                            const varIds = new Set<number>();
+                                            data.forEach(u => u.values?.forEach((v: any) => varIds.add(v.variableId)));
+                                            const uniqueVars = Array.from(varIds);
+                                            return uniqueVars.map(vid => {
+                                                 const found = candidateVars?.find(c => c.id === vid);
+                                                 const name = found?.n1 || `Var ${vid}`;
+                                                 return allYears.map(y => (
+                                                     <th key={`${vid}-${y}`} className="px-4 py-3 min-w-[120px]" title={name}>
+                                                         {name} ({y})
+                                                     </th>
+                                                 ));
+                                            });
+                                        })()}
+                                    </tr>
+                                ) : (
+                                    <tr>
                                     {orientation === 'vars-cols' ? (
                                         <>
                                             <th className="px-4 py-3 bg-[#121212]">Year</th>
@@ -198,9 +289,34 @@ export default function DataDisplay({ data, analysis, onConfirm, isFetchingObjec
                                         </>
                                     )}
                                 </tr>
+                                )}
                             </thead>
                             <tbody className="divide-y divide-white/5">
-                                {orientation === 'vars-cols' ? (
+                                {isMultiUnit ? (
+                                    data.map((unit) => {
+                                        // Calc unique vars again - optimize this later ideally
+                                        const varIds = new Set<number>();
+                                        data.forEach(u => u.values?.forEach((v: any) => varIds.add(v.variableId)));
+                                        const uniqueVars = Array.from(varIds);
+
+                                        return (
+                                        <tr key={unit.id} className="hover:bg-white/5 transition-colors">
+                                            <td className="px-4 py-3 font-medium text-white">{unit.name}</td>
+                                            {uniqueVars.map(vid => (
+                                                allYears.map(year => {
+                                                    const valObj = unit.values?.find((v: any) => v.variableId === vid && v.year === year);
+                                                    return (
+                                                        <td key={`${unit.id}-${vid}-${year}`} className="px-4 py-3 text-emerald-400 font-mono">
+                                                             {valObj ? (valObj.value ?? valObj.val ?? "-") : "-"}
+                                                        </td>
+                                                    );
+                                                })
+                                            ))}
+                                        </tr>
+                                        );
+                                    })
+                                ) : (
+                                    orientation === 'vars-cols' ? (
                                     allYears.map(year => (
                                         <tr key={year} className="hover:bg-white/5 transition-colors">
                                             <td className="px-4 py-3 font-mono text-white bg-white/5">{year}</td>
@@ -238,7 +354,7 @@ export default function DataDisplay({ data, analysis, onConfirm, isFetchingObjec
                                             })}
                                         </tr>
                                     ))
-                                )}
+                                ))}
                             </tbody>
                         </table>
                     </div>
