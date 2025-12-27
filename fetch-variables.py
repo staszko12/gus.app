@@ -47,6 +47,14 @@ def pobierz_wszystkie_zmienne():
             json.dump(wszystkie_zmienne, f, ensure_ascii=False, indent=2)
         print("📄 Zapisano do pliku: gus-variables.json")
         
+        # Stwórz słownik zmiennych indeksowany po ID
+        zmienne_dict = {str(var['id']): var for var in wszystkie_zmienne}
+        
+        # Zapisz słownik do pliku JSON
+        with open('gus-variables-dict.json', 'w', encoding='utf-8') as f:
+            json.dump(zmienne_dict, f, ensure_ascii=False, indent=2)
+        print("📄 Zapisano do pliku: gus-variables-dict.json")
+        
         # Zapisz do pliku tekstowego (czytelny format)
         with open('gus-variables.txt', 'w', encoding='utf-8') as f:
             f.write(f"Lista zmiennych GUS BDL (łącznie: {len(wszystkie_zmienne)})\n")

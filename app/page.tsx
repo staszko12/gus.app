@@ -4,12 +4,14 @@ import { useState } from "react";
 import SearchWizard from "@/components/wizard/SearchWizard";
 import DataDisplay from "@/components/DataDisplay";
 import { GusClient } from "@/services/gus-client";
-import { AIQueryAnalysis } from "@/services/ai-processor"; // Keeping type for compatibility
+import { AIQueryAnalysis } from "@/services/ai-processor";
+import AgentSearch from "@/components/AgentSearch";
 
 export default function Home() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [data, setData] = useState<any[]>([]);
   const [viewMode, setViewMode] = useState<'WIZARD' | 'GRID'>('WIZARD');
+  const [searchMode, setSearchMode] = useState<'WIZARD' | 'AGENT'>('AGENT'); // Default to Agent for demo
 
   // State to hold selection context for DataDisplay
   const [resultContext, setResultContext] = useState<{
@@ -18,6 +20,15 @@ export default function Home() {
   } | null>(null);
 
   const gusClient = new GusClient(process.env.NEXT_PUBLIC_GUS_CLIENT_ID);
+
+  const handleAgentDataFound = (items: any[], analysis: AIQueryAnalysis, variable: any) => {
+    setData(items);
+    setResultContext({
+      analysis,
+      variables: [variable]
+    });
+    setViewMode('GRID');
+  };
 
   const handleWizardComplete = async (config: {
     variables: any[];
@@ -148,18 +159,42 @@ export default function Home() {
               GUS Data <span className="text-gray-500 font-normal">Explorer</span>
             </h1>
           </div>
-          {viewMode === 'GRID' && (
-            <button
-              onClick={() => setViewMode('WIZARD')}
-              className="text-sm text-gray-400 hover:text-white transition-colors"
-            >
-              &larr; New Search
-            </button>
-          )}
+
+          <div className="flex items-center gap-4">
+            {viewMode === 'WIZARD' && (
+              <div className="flex bg-white/10 p-1 rounded-lg">
+                <button
+                  onClick={() => setSearchMode('WIZARD')}
+                  className={`px-3 py-1 text-sm rounded-md transition-all ${searchMode === 'WIZARD' ? 'bg-white text-black' : 'text-gray-400 hover:text-white'}`}
+                >
+                  Wizard
+                </button>
+                <button
+                  onClick={() => setSearchMode('AGENT')}
+                  className={`px-3 py-1 text-sm rounded-md transition-all ${searchMode === 'AGENT' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white'}`}
+                >
+                  AI Agent
+                </button>
+              </div>
+            )}
+
+            {viewMode === 'GRID' && (
+              <button
+                onClick={() => setViewMode('WIZARD')}
+                className="text-sm text-gray-400 hover:text-white transition-colors"
+              >
+                &larr; New Search
+              </button>
+            )}
+          </div>
         </header>
 
         {viewMode === 'WIZARD' ? (
-          <SearchWizard onComplete={handleWizardComplete} />
+          searchMode === 'WIZARD' ? (
+            <SearchWizard onComplete={handleWizardComplete} />
+          ) : (
+            <AgentSearch onDataFound={handleAgentDataFound} />
+          )
         ) : (
           <div className="animate-in fade-in zoom-in-95 duration-500">
             {resultContext && (
