@@ -99,7 +99,7 @@ export class GusClient {
     const params: Record<string, any> = {
       "unit-level": unitLevel,
       "year": year,
-      "page-size": 5000
+      "page-size": 100
     };
     if (parentId) {
       params["unit-parent-id"] = parentId;
