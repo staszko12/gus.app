@@ -50,11 +50,15 @@ export class GusClient {
 
     const headers: HeadersInit = {
       "Content-Type": "application/json",
-      "Accept": "application/json"
+      "Accept": "application/json",
+      "User-Agent": "GusSdpApp/1.0 (Next.js Server Actions)"
     };
 
     if (this.apiKey) {
       headers["X-ClientId"] = this.apiKey;
+      console.log(`📡 [GusClient] Attaching X-ClientId: Yes (Length: ${this.apiKey.length})`);
+    } else {
+      console.warn(`📡 [GusClient] Attaching X-ClientId: NO (Key missing)`);
     }
 
     console.log(`📡 [GusClient] Fetching: ${url.toString()}`);
