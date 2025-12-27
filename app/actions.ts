@@ -9,8 +9,17 @@ if (!process.env.GUS_API_KEY && !process.env.NEXT_PUBLIC_GUS_CLIENT_ID) console.
 
 const aiProcessor = new AiProcessor();
 // Initialize GusClient for server-side use (direct URL, server env key)
+const gusKey = process.env.GUS_API_KEY || process.env.NEXT_PUBLIC_GUS_CLIENT_ID || "";
+
+console.log(`Server Actions Init: GUS Key present? ${!!gusKey}, Length: ${gusKey.length}`);
+if (gusKey.length > 0) {
+    console.log(`Server Actions Init: GUS Key starts with: ${gusKey.substring(0, 4)}...`);
+} else {
+    console.warn("⚠️ CRITICAL: GUS_API_KEY is EMPTY!");
+}
+
 const serverGusClient = new GusClient(
-    process.env.GUS_API_KEY || process.env.NEXT_PUBLIC_GUS_CLIENT_ID || "",
+    gusKey,
     "https://bdl.stat.gov.pl/api/v1"
 );
 
