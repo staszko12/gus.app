@@ -2,8 +2,14 @@
 
 import { useState } from "react";
 import { AIQueryAnalysis } from "@/services/ai-processor";
-import { GusClient } from "@/services/gus-client";
-import { analyzeQueryAction, reRankVariablesAction } from "@/app/actions";
+import {
+    analyzeQueryAction,
+    reRankVariablesAction,
+    searchVariablesAction,
+    searchUnitsAction,
+    getUnitDataAction,
+    getVariableDataAction
+} from "@/app/actions";
 
 interface AgentSearchProps {
     onDataFound: (data: any[], analysis: AIQueryAnalysis, variable: any) => void;
@@ -16,8 +22,6 @@ export default function AgentSearch({ onDataFound }: AgentSearchProps) {
     const [step, setStep] = useState<Step>("IDLE");
     const [logs, setLogs] = useState<string[]>([]);
     const [error, setError] = useState<string | null>(null);
-
-    const gusClient = new GusClient(process.env.NEXT_PUBLIC_GUS_CLIENT_ID);
 
     const addLog = (msg: string) => setLogs((prev) => [...prev, msg]);
 
@@ -42,7 +46,7 @@ export default function AgentSearch({ onDataFound }: AgentSearchProps) {
             // 2. SEARCH
             setStep("SEARCHING");
             addLog(`🔍 Searching GUS API for "${analysis.searchTerms}"...`);
-            const searchRes = await gusClient.searchVariables(analysis.searchTerms);
+            const searchRes = await searchVariablesAction(analysis.searchTerms);
             const candidates = searchRes.results || [];
             addLog(`✅ Found ${candidates.length} candidates.`);
 
@@ -74,7 +78,7 @@ export default function AgentSearch({ onDataFound }: AgentSearchProps) {
 
             if (analysis.location && analysis.location.toLowerCase() !== "polska") {
                 addLog(`🗺️ Resolving unit ID for "${analysis.location}"...`);
-                const unitRes = await gusClient.searchUnits(analysis.location);
+                const unitRes = await searchUnitsAction(analysis.location);
                 if (unitRes.results && unitRes.results.length > 0) {
                     unitId = unitRes.results[0].id;
                     unitName = unitRes.results[0].name;
@@ -90,7 +94,7 @@ export default function AgentSearch({ onDataFound }: AgentSearchProps) {
             let dataRes;
             if (unitId) {
                 // Get data for this specific unit and variable
-                dataRes = await gusClient.getUnitData(unitId, [bestMatch.id], years);
+                dataRes = await getUnitDataAction(unitId, [bestMatch.id], years);
             } else {
                 // Get aggregated data (e.g. by voivodship) if no specific unit, or just Polska?
                 // For simplicity, let's use getVariableData which returns data for all units at a certain level.
@@ -98,7 +102,7 @@ export default function AgentSearch({ onDataFound }: AgentSearchProps) {
                 // Let's default to Level 2 (Województwa) if no unit specified but "Polska" meant broadly.
                 // Or just fetch specific variable data.
                 addLog(`ℹ️ No specific unit selected, fetching variable data for all Voivodships (Level 2)...`);
-                dataRes = await gusClient.getVariableData(bestMatch.id, 2, years);
+                dataRes = await getVariableDataAction(bestMatch.id, 2, years);
             }
 
             addLog(`✅ Data received: ${dataRes.results?.length || 0} records.`);

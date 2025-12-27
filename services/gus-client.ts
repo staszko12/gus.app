@@ -24,8 +24,9 @@ export class GusClient {
   // In a real app, this would be an environment variable
   private apiKey = "";
 
-  constructor(apiKey?: string) {
+  constructor(apiKey?: string, baseUrl?: string) {
     if (apiKey) this.apiKey = apiKey;
+    if (baseUrl) this.baseUrl = baseUrl;
   }
 
   private async fetch<T>(endpoint: string, params: Record<string, string | number | (string | number)[]> = {}): Promise<T> {
