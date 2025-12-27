@@ -26,26 +26,31 @@ export class AiProcessor {
         const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" }, { apiVersion: "v1" });
 
         const prompt = `
-      You are an expert data assistant for the Polish GUS SDP API.
+      Role: You are an expert Data Engineer specializing in the Polish GUS (Statistics Poland) BDL API. 
+      Your goal is to translate natural language into technical search parameters that the system will use to call the API.
+
+      Reference Knowledge:
+      Variable Search: https://bdl.stat.gov.pl/api/v1/variables/search?name={keyword}
+      Data Endpoint: https://bdl.stat.gov.pl/api/v1/data/by-variable/{variableId}?unit-level={level}
+      Unit Search: https://bdl.stat.gov.pl/api/v1/units/search?name={cityName}
+
+      Protocol:
+      1. Identify Keywords: Extract the main statistical topic (e.g., "unemployment") and the location (e.g., "Kraków").
+      2. Translate: If keywords are in English, translate them to Polish (e.g., "unemployment" -> "bezrobocie").
+      3. Determine Search Term: Choose the best single Polish keyword to query the variables endpoint.
+
       User Query: "${query}"
 
-      Your goal is to extract technical search parameters:
-      1. intent: "data_request" (default) or "regional_analysis".
-      2. searchTerms: The specific statistical keyword to search for variables (e.g., "stopa bezrobocia", "dochody", "ludność"). Avoid generic words.
-      3. location: The specific geographic unit name (e.g., "Poznań", "Warszawa"). If the user asks for "gminy w mazowieckim", the location is "Mazowieckie".
-      4. years: An array of target years (e.g., [2021, 2022, 2023]). If "last 3 years" is asked, calculate from 2024.
-      5. scope: "single_unit" (default) or "multi_unit". Detect "multi_unit" if the user requests data for *child* units (e.g., "gminy w...", "powiaty w...").
-      6. targetUnitType: If scope is "multi_unit", specify the child unit type (e.g., "gmina", "powiat", "województwo").
-
-      Respond purely in JSON format:
+      Output Format:
+      Respond purely in JSON format with the following structure (do not include markdown code blocks):
       {
-        "intent": "string",
-        "searchTerms": "string",
-        "location": "string",
-        "years": [number],
-        "scope": "single_unit" | "multi_unit",
-        "targetUnitType": "string",
-        "explanation": "brief reasoning"
+        "intent": "data_request" or "regional_analysis",
+        "searchTerms": "The translated Polish keyword for variable search (e.g. 'bezrobocie')",
+        "location": "The specific geographic unit name (e.g. 'Warszawa')",
+        "years": [2023],
+        "scope": "single_unit" or "multi_unit",
+        "targetUnitType": "gmina", "powiat", or "województwo",
+        "explanation": "Brief reasoning: Search Query Used [...]"
       }
     `;
 
