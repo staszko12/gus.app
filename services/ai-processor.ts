@@ -118,16 +118,18 @@ export class AiProcessor {
     private getFallbackAnalysis(query: string): AIQueryAnalysis {
         const isMulti = query.toLowerCase().includes("gmin") || query.toLowerCase().includes("powiat");
 
+        // Simple heuristic: use the whole query or first noun as search term
+        // Ideally we just pass the query.
         return {
             intent: "data_request",
-            searchTerms: "Ludność",
-            topic: "Ludność",
-            location: "Polska", // Default to Polska for neutrality
+            searchTerms: query, // Use the query itself as fallback
+            topic: query,
+            location: "Polska", // Default to Polska
             unit: "Polska",
             years: [2023],
             scope: isMulti ? "multi_unit" : "single_unit",
             targetUnitType: isMulti ? "gmina" : undefined,
-            explanation: "Fallback: AI API Unreachable."
+            explanation: "Fallback: AI API Unreachable. Used original query."
         };
     }
 }
