@@ -1,8 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { AiProcessor, AIQueryAnalysis } from "@/services/ai-processor";
+import { AIQueryAnalysis } from "@/services/ai-processor";
 import { GusClient } from "@/services/gus-client";
+import { analyzeQueryAction, reRankVariablesAction } from "@/app/actions";
 
 interface AgentSearchProps {
     onDataFound: (data: any[], analysis: AIQueryAnalysis, variable: any) => void;
@@ -16,7 +17,6 @@ export default function AgentSearch({ onDataFound }: AgentSearchProps) {
     const [logs, setLogs] = useState<string[]>([]);
     const [error, setError] = useState<string | null>(null);
 
-    const aiProcessor = new AiProcessor();
     const gusClient = new GusClient(process.env.NEXT_PUBLIC_GUS_CLIENT_ID);
 
     const addLog = (msg: string) => setLogs((prev) => [...prev, msg]);
@@ -32,7 +32,7 @@ export default function AgentSearch({ onDataFound }: AgentSearchProps) {
         try {
             // 1. EXTRACT
             addLog(`🕵️ Extracting intent from "${query}"...`);
-            const analysis = await aiProcessor.analyzeQuery(query);
+            const analysis = await analyzeQueryAction(query);
             addLog(`✅ Extracted: Subject="${analysis.searchTerms}", Location="${analysis.location}"`);
 
             if (!analysis.searchTerms) {
@@ -54,7 +54,7 @@ export default function AgentSearch({ onDataFound }: AgentSearchProps) {
             setStep("MATCHING");
             addLog(`🧠 LLM Matching best variable...`);
             // We pass the candidates to the LLM to pick the best one
-            const matchedVars = await aiProcessor.reRankVariables(query, candidates);
+            const matchedVars = await reRankVariablesAction(query, candidates);
 
             if (matchedVars.length === 0) {
                 throw new Error("LLM could not match any relevant variables.");
