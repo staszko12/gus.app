@@ -58,6 +58,17 @@ export default function AgentSearch({ onDataFound }: AgentSearchProps) {
             const analysis = await analyzeQueryAction(query, availableSubjects);
 
             addLog(`✅ Extracted: Subject="${analysis.searchTerms}", CategoryID=${analysis.targetSubjectId || 'None'}, Location="${analysis.location}"`);
+
+            if (analysis.intent?.includes("fallback")) {
+                addLog(`⚠️ ${analysis.explanation}`);
+                // Make sure we have valid search terms
+                if (!analysis.searchTerms || analysis.searchTerms.length < 3) {
+                    setError("AI Service Unavailable and could not extract keywords. Please try simpler keywords.");
+                    setStep("IDLE");
+                    return;
+                }
+            }
+
             setAnalysisResult(analysis);
 
             if (!analysis.searchTerms) {

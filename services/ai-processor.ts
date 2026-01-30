@@ -139,19 +139,36 @@ export class AiProcessor {
     private getFallbackAnalysis(query: string): AIQueryAnalysis {
         const isMulti = query.toLowerCase().includes("gmin") || query.toLowerCase().includes("powiat");
 
-        // Simple heuristic: use the whole query or first noun as search term
-        // Ideally we just pass the query.
+        // Improved keyword extraction
+        const keywords = this.extractKeywords(query);
+
         return {
-            intent: "data_request",
-            searchTerms: query, // Use the query itself as fallback
-            topic: query,
+            intent: "data_request (fallback)",
+            searchTerms: keywords,
             location: "Polska", // Default to Polska
-            unit: "Polska",
             years: [2023],
             scope: isMulti ? "multi_unit" : "single_unit",
             targetUnitType: isMulti ? "gmina" : undefined,
-            explanation: "Fallback: AI API Unreachable. Used original query."
+            explanation: "⚠️ API Unavailable. Using fallback keyword extraction.",
         };
+    }
+
+    private extractKeywords(query: string): string {
+        const stopWords = ["ile", "jakie", "jaka", "jest", "w", "na", "dla", "i", "oraz", "czy", "roku", "latach", "ludzi", "osób", "liczba", "ilość"];
+
+        let cleaned = query.toLowerCase().replace(/[?,.]/g, "");
+
+        // Remove known cities from search terms to avoid "Warszawa" being the variable to search
+        // A simple heuristic list for common cities
+        const commonLocations = ["warszawa", "kraków", "łódź", "wrocław", "poznań", "gdańsk", "szczecin", "bydgoszcz", "lublin", "białystok", "katowice", "polska"];
+
+        commonLocations.forEach(loc => {
+            cleaned = cleaned.replace(new RegExp(`\\b${loc}\\b`, "g"), "");
+        });
+
+        const words = cleaned.split(/\s+/).filter(w => !stopWords.includes(w) && w.length > 2);
+
+        return words.join(" ");
     }
 }
 
