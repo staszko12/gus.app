@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "bdl-api": {
+      "command": "python",
+      "args": ["server.py"],
+      "cwd": "/path/to/bdl-mcp-server"
+    }
+  }
+}

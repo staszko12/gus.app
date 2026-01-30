@@ -146,4 +146,31 @@ export class GusClient {
     };
     return this.fetch<GusResponse<any>>("/units/search", params);
   }
+
+  /**
+   * Fetch subjects (Categories)
+   * Endpoint: /subjects
+   */
+  async getSubjects(parentId?: string) {
+    const params: Record<string, any> = {
+      "page-size": 100,
+      "lang": "pl"
+    };
+    if (parentId) {
+      params["parent-id"] = parentId;
+    }
+    return this.fetch<GusResponse<any>>("/subjects", params);
+  }
+
+  /**
+   * Fetch variables by subject
+   * Endpoint: /variables
+   */
+  async getVariablesBySubject(subjectId: string) {
+    const params: Record<string, any> = {
+      "subject-id": subjectId,
+      "page-size": 100
+    };
+    return this.fetch<GusResponse<any>>("/variables", params);
+  }
 }

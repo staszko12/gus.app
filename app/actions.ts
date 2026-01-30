@@ -56,6 +56,18 @@ export async function getUnitDataAction(unitId: string, variableIds: number[], y
     return safeAction("getUnitData", () => serverGusClient.getUnitData(unitId, variableIds, years));
 }
 
-export async function getVariableDataAction(variableId: number, unitLevel: number, years: number[]) {
-    return safeAction("getVariableData", () => serverGusClient.getVariableData(variableId, unitLevel, years));
+export async function getVariableDataAction(variableId: number, unitLevel: number, years: number[], parentId?: string) {
+    return safeAction("getVariableData", () => serverGusClient.getVariableData(variableId, unitLevel, years, parentId));
+}
+
+export async function getSubjectsAction(parentId?: string) {
+    return safeAction("getSubjects", () => serverGusClient.getSubjects(parentId));
+}
+
+export async function getVariablesBySubjectAction(subjectId: string) {
+    return safeAction("getVariablesBySubject", () => serverGusClient.getVariablesBySubject(subjectId));
+}
+
+export async function getUnitsAction(level: number, parentId?: string) {
+    return safeAction("getUnits", () => serverGusClient.getUnits(level, parentId));
 }

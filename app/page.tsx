@@ -3,7 +3,7 @@
 import { useState } from "react";
 import SearchWizard from "@/components/wizard/SearchWizard";
 import DataDisplay from "@/components/DataDisplay";
-import { GusClient } from "@/services/gus-client";
+import { getUnitDataAction, getVariableDataAction, getUnitsAction } from "@/app/actions";
 import { AIQueryAnalysis } from "@/services/ai-processor";
 import AgentSearch from "@/components/AgentSearch";
 
@@ -19,8 +19,6 @@ export default function Home() {
     variables: any[];
   } | null>(null);
 
-  const gusClient = new GusClient(process.env.NEXT_PUBLIC_GUS_CLIENT_ID);
-
   const handleAgentDataFound = (items: any[], analysis: AIQueryAnalysis, variable: any) => {
     setData(items);
     setResultContext({
@@ -29,6 +27,7 @@ export default function Home() {
     });
     setViewMode('GRID');
   };
+
 
   const handleWizardComplete = async (config: {
     variables: any[];
@@ -69,49 +68,130 @@ export default function Home() {
 
     try {
       if (isMultiUnit) {
-        // --- MULTI-UNIT STRATEGY (Optimized) ---
-        // Fetch data for ALL child units for EACH variable
+        // --- MULTI-UNIT STRATEGY (Enforced Recursion) ---
+        // GUS API response objects often lack the 'level' property, making verification impossible.
+        // We MUST enforce strict hierarchy traversal based on TERYT rules.
+        // Rule: If asking for Gminas (5) from Województwo (2), we MUST go through Powiats (4).
 
-        const fetchPromises = config.variables.map(async (variable) => {
-          // getVariableData(varId, unitLevel, years, parentId)
-          // This returns a list of Child Units, each with values for this variable
-          const res = await gusClient.getVariableData(
-            variable.id,
-            config.childLevel!,
-            config.years,
-            config.unit.id
-          );
-          return { variable, data: res?.results || [] };
-        });
+        const targetLevel = Number(config.childLevel);
+        const parentLevel = Number(config.unit.level);
+        let finalUnits: any[] = [];
 
-        const allResults = await Promise.all(fetchPromises);
+        console.log(`[Fetch Strategy] Requesting Level ${targetLevel} units under ${config.unit.name} (Level ${parentLevel})...`);
 
-        // Aggregate results: Map<UnitID, UnitObject>
-        const unitMap = new Map<string, any>();
+        // EXPLICIT Drill Down for gaps
+        if (parentLevel === 2 && targetLevel === 6) {
+          console.log(`[Fetch Strategy] Detected Woj -> Gmina gap. Forcing 2-step fetch.`);
 
-        allResults.forEach(({ variable, data }) => {
-          // data is UnitData[]
-          (data as any[]).forEach((unitItem: any) => {
-            if (!unitMap.has(unitItem.id)) {
-              unitMap.set(unitItem.id, {
-                id: unitItem.id,
-                name: unitItem.name,
-                values: []
-              });
+          // 1. Fetch Intermediates (Powiats - Level 4)
+          const intermediateRes = await getUnitsAction(5, config.unit.id);
+          // Filter to ensure we only have Level 4. Some API responses might include mixed levels or parent refs.
+          const intermediates = (intermediateRes?.results || []).filter((u: any) => u.level === 5);
+
+          if (intermediateRes?.results?.length && intermediateRes.results.length > intermediates.length) {
+            console.warn(`[Fetch Strategy] Filtered out ${intermediateRes.results.length - intermediates.length} non-level-5 units from intermediates.`);
+          }
+
+          if (intermediates.length === 0) {
+            console.warn("No intermediate units (Powiats) found.");
+          } else {
+            console.log(`[Fetch Strategy] Found ${intermediates.length} powiats. Drilling down...`);
+          }
+
+          // 2. Fetch Target (Gminas - Level 5) from Intermediates
+          const drillPromises = intermediates.map((p: any) => getUnitsAction(6, p.id));
+          const drillResults = await Promise.all(drillPromises);
+
+          drillResults.forEach(res => {
+            if (res?.results) {
+              // Filter results to ensure they are actually Level 5
+              const validGminas = res.results.filter((u: any) => u.level === 6);
+
+              if (res.results.length > validGminas.length) {
+                // Log sample of filtered out units to understand what's wrong
+                const invalid = res.results.find((u: any) => u.level !== 6);
+                console.warn(`[Fetch Strategy] Filtered out ${res.results.length - validGminas.length} non-level-6 units. Sample invalid: ${invalid?.name} (${invalid?.level})`);
+              }
+
+              finalUnits.push(...validGminas);
             }
-            const unitEntry = unitMap.get(unitItem.id);
-
-            // Add values, tagged with variableId
-            const taggedValues = (unitItem.values || []).map((val: any) => ({
-              ...val,
-              variableId: variable.id
-            }));
-
-            unitEntry.values.push(...taggedValues);
           });
-        });
+          console.log(`[Fetch Strategy] Recursion complete. Found ${finalUnits.length} gminas.`);
 
-        const unifiedData = Array.from(unitMap.values());
+        } else {
+          // Direct fetch for standard cases (e.g. 4->5, 2->4)
+          // Or if the gap is not 2->5 (e.g. 2->6? unlikely used)
+          const res = await getUnitsAction(targetLevel, config.unit.id);
+
+          // Apply strict filtering for direct fetch too, just in case
+          if (res?.results) {
+            const filtered = res.results.filter((u: any) => u.level === targetLevel);
+            if (res.results.length > filtered.length) {
+              console.warn(`[Fetch Strategy] Direct fetch filtered out ${res.results.length - filtered.length} items with wrong level.`);
+            }
+            finalUnits = filtered;
+          } else {
+            finalUnits = [];
+          }
+        }
+
+        const childUnits = finalUnits;
+
+
+        if (childUnits.length === 0) {
+          alert("No sub-units found for this region.");
+          setIsProcessing(false);
+          return;
+        }
+
+        console.log(`fetching data for ${childUnits.length} sub-units...`);
+
+        // 2. For each child unit, fetch the variables.
+        // We can batch this or do it in parallel.
+        const variableIds = config.variables.map(v => v.id);
+
+        // BATCHING: GUS API might have rate limits. Let's do batches of 10.
+        const BATCH_SIZE = 10;
+        const allUnitData: any[] = [];
+
+        for (let i = 0; i < childUnits.length; i += BATCH_SIZE) {
+          const batch = childUnits.slice(i, i + BATCH_SIZE);
+          const batchPromises = batch.map(async (unit: any) => {
+            try {
+              // Fetch data for this specific unit
+              const res = await getUnitDataAction(unit.id, variableIds, config.years);
+              if (res && res.results) {
+                // res.results is Array of { id, values: [ { year, val } ] } (variable objects)
+                // But wait, getUnitData returns structure:
+                // results: [ { id: varId, name: varName, values: [...] } ]
+                // We need to reshape this to our grid format: Unit -> [Values]
+
+                const values = res.results.flatMap((v: any) =>
+                  (v.values || []).map((val: any) => ({
+                    ...val,
+                    variableId: v.id
+                  }))
+                );
+
+                return {
+                  id: unit.id,
+                  name: unit.name,
+                  values: values
+                };
+              }
+            } catch (e) {
+              console.error(`Failed to fetch for unit ${unit.name}`, e);
+              return null;
+            }
+            return null;
+          });
+
+          const batchResults = await Promise.all(batchPromises);
+          allUnitData.push(...batchResults.filter(u => u !== null));
+        }
+
+        const unifiedData = allUnitData;
+
 
         if (unifiedData.length === 0) {
           alert("No data found for the selected criteria.");
@@ -123,12 +203,10 @@ export default function Home() {
       } else {
         // --- SINGLE-UNIT STRATEGY ---
         const varIds = config.variables.map(v => v.id);
-        const response = await gusClient.getUnitData(config.unit.id, varIds, config.years);
+        const response = await getUnitDataAction(config.unit.id, varIds, config.years);
 
         if (response?.results) {
           // In Single Unit mode, results is an array of variables with values
-          // But DataDisplay handles this based on 'scope'. 
-          // If scope is single_unit, it expects array of Variables.
           setData(response.results);
           setViewMode('GRID');
         } else {
