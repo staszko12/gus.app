@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { AIQueryAnalysis } from "@/services/ai-processor";
 import {
     analyzeQueryAction,
@@ -8,7 +8,8 @@ import {
     searchVariablesAction,
     searchUnitsAction,
     getUnitDataAction,
-    getVariableDataAction
+    getVariableDataAction,
+    getSubjectsAction
 } from "@/app/actions";
 import CategoryBrowser from "@/components/wizard/CategoryBrowser";
 
@@ -28,6 +29,16 @@ export default function AgentSearch({ onDataFound }: AgentSearchProps) {
     const [analysisResult, setAnalysisResult] = useState<AIQueryAnalysis | null>(null);
     const [confirmedVars, setConfirmedVars] = useState<any[]>([]);
     const [browserKey, setBrowserKey] = useState(0); // Forcing re-mount of CategoryBrowser
+    const [availableSubjects, setAvailableSubjects] = useState<any[]>([]);
+
+    useEffect(() => {
+        // Pre-fetch subjects for context
+        getSubjectsAction().then(res => {
+            if (res && res.results) {
+                setAvailableSubjects(res.results);
+            }
+        });
+    }, []);
 
     const addLog = (msg: string) => setLogs((prev) => [...prev, msg]);
 
@@ -43,8 +54,10 @@ export default function AgentSearch({ onDataFound }: AgentSearchProps) {
         try {
             // 1. EXTRACT
             addLog(`🕵️ Extracting intent from "${query}"...`);
-            const analysis = await analyzeQueryAction(query);
-            addLog(`✅ Extracted: Subject="${analysis.searchTerms}", Location="${analysis.location}"`);
+            // Pass available subjects to help LLM pick the right domain
+            const analysis = await analyzeQueryAction(query, availableSubjects);
+
+            addLog(`✅ Extracted: Subject="${analysis.searchTerms}", CategoryID=${analysis.targetSubjectId || 'None'}, Location="${analysis.location}"`);
             setAnalysisResult(analysis);
 
             if (!analysis.searchTerms) {
@@ -53,10 +66,23 @@ export default function AgentSearch({ onDataFound }: AgentSearchProps) {
 
             // 2. SEARCH
             setStep("SEARCHING");
-            addLog(`🔍 Searching GUS API for "${analysis.searchTerms}"...`);
-            const searchRes = await searchVariablesAction(analysis.searchTerms);
+            // Use targetSubjectId to scope the search if available
+            const scopeLog = analysis.targetSubjectId ? ` (Scoped to Category ${analysis.targetSubjectId})` : "";
+            addLog(`🔍 Searching GUS API for "${analysis.searchTerms}"${scopeLog}...`);
+
+            const searchRes = await searchVariablesAction(analysis.searchTerms, analysis.targetSubjectId);
             const candidates = searchRes.results || [];
             addLog(`✅ Found ${candidates.length} candidates.`);
+
+            // If scoped search fails, fallback to global search?
+            if (candidates.length === 0 && analysis.targetSubjectId) {
+                addLog(`⚠️ No results in category. Retrying global search...`);
+                const fallbackRes = await searchVariablesAction(analysis.searchTerms);
+                if (fallbackRes.results) {
+                    candidates.push(...fallbackRes.results);
+                    addLog(`✅ Found ${candidates.length} candidates in global search.`);
+                }
+            }
 
             if (candidates.length === 0) {
                 throw new Error(`No variables found for "${analysis.searchTerms}".`);

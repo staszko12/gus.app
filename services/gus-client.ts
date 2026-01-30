@@ -76,13 +76,16 @@ export class GusClient {
   /**
    * Search for variables by name (from Swagger /variables/search)
    */
-  async searchVariables(query: string, level?: number) {
+  async searchVariables(query: string, level?: number, subjectId?: string) {
     const params: Record<string, any> = {
       name: query,
-      "page-size": 10
+      "page-size": 20 // Increased from 10 to get more candidates
     };
     if (level !== undefined) {
       params["level"] = level;
+    }
+    if (subjectId) {
+      params["subject-id"] = subjectId;
     }
     return this.fetch<GusResponse<any>>("/variables/search", params);
   }

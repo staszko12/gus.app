@@ -34,8 +34,8 @@ async function safeAction<T>(name: string, fn: () => Promise<T>): Promise<T> {
     }
 }
 
-export async function analyzeQueryAction(query: string): Promise<AIQueryAnalysis> {
-    return safeAction("analyzeQuery", () => aiProcessor.analyzeQuery(query));
+export async function analyzeQueryAction(query: string, availableSubjects: any[] = []): Promise<AIQueryAnalysis> {
+    return safeAction("analyzeQuery", () => aiProcessor.analyzeQuery(query, availableSubjects));
 }
 
 export async function reRankVariablesAction(query: string, candidates: any[]): Promise<any[]> {
@@ -44,8 +44,8 @@ export async function reRankVariablesAction(query: string, candidates: any[]): P
 
 // --- GUS API Server Actions ---
 
-export async function searchVariablesAction(query: string) {
-    return safeAction("searchVariables", () => serverGusClient.searchVariables(query));
+export async function searchVariablesAction(query: string, subjectId?: string) {
+    return safeAction("searchVariables", () => serverGusClient.searchVariables(query, undefined, subjectId));
 }
 
 export async function searchUnitsAction(name: string) {

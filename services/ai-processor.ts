@@ -12,18 +12,30 @@ export interface AIQueryAnalysis {
     years?: number[]; // Added to support multi-year analysis
     scope?: 'single_unit' | 'multi_unit';
     targetUnitType?: string; // e.g., 'gmina', 'powiat'
+    targetSubjectId?: string; // ID of the identified GUS subject
     explanation: string;
 }
 
 export class AiProcessor {
-    async analyzeQuery(query: string): Promise<AIQueryAnalysis> {
+    async analyzeQuery(query: string, availableSubjects: any[] = []): Promise<AIQueryAnalysis> {
         if (!API_KEY) {
-            // throw new Error("Gemini API Key is missing");
             console.warn("Gemini API Key is missing. Using Fallback.");
             return this.getFallbackAnalysis(query);
         }
 
         const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" }, { apiVersion: "v1" });
+
+        // Prepare context about subjects if available
+        let subjectContext = "";
+        if (availableSubjects.length > 0) {
+            const subjectList = availableSubjects.map(s => `- ${s.name} (ID: ${s.id})`).join("\n");
+            subjectContext = `
+            Available GUS Data Categories (Subjects):
+            ${subjectList}
+            
+            Task: Select the ONE best matching Category ID from the list above. If none match perfectly, return null or omit.
+            `;
+        }
 
         const prompt = `
       Role: You are an expert Data Engineer specializing in the Polish GUS (Statistics Poland) BDL API. 
@@ -34,10 +46,13 @@ export class AiProcessor {
       Data Endpoint: https://bdl.stat.gov.pl/api/v1/data/by-variable/{variableId}?unit-level={level}
       Unit Search: https://bdl.stat.gov.pl/api/v1/units/search?name={cityName}
 
+      ${subjectContext}
+
       Protocol:
       1. Identify Keywords: Extract the main statistical topic (e.g., "unemployment") and the location (e.g., "Kraków").
       2. Translate: If keywords are in English, translate them to Polish (e.g., "unemployment" -> "bezrobocie").
       3. Determine Search Term: Choose the best single Polish keyword to query the variables endpoint.
+      4. Select Category: If a list of categories was provided, pick the most relevant ID.
 
       User Query: "${query}"
 
@@ -50,6 +65,7 @@ export class AiProcessor {
         "years": [2023],
         "scope": "single_unit" or "multi_unit",
         "targetUnitType": "gmina", "powiat", or "województwo",
+        "targetSubjectId": "ID_FROM_LIST" or null,
         "explanation": "Brief reasoning: Search Query Used [...]"
       }
     `;
